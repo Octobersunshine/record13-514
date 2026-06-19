@@ -5,7 +5,7 @@ use redb::{Database, ReadableTable, TableDefinition};
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::error::AppError;
-use crate::models::{Indicator, ParsedIndicator, Report, ReportWithIndicators};
+use crate::models::{Indicator, IndicatorTrend, ParsedIndicator, Report, ReportWithIndicators, TrendComparison};
 
 const REPORTS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("reports");
 const INDICATORS_TABLE: TableDefinition<u64, &[u8]> = TableDefinition::new("indicators");
@@ -208,5 +208,86 @@ impl Db {
         }
         write_tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    pub fn get_trend_comparison(&self) -> Result<TrendComparison, AppError> {
+        let reports = self.list_reports()?;
+        if reports.len() < 2 {
+            return Err(AppError::NotFound("至少需要两份体检报告才能进行趋势对比".to_string()));
+        }
+
+        let latest_report = &reports[0];
+        let previous_report = &reports[1];
+
+        let latest_indicators = self.get_indicators_by_report(&latest_report.id)?;
+        let previous_indicators = self.get_indicators_by_report(&previous_report.id)?;
+
+        use std::collections::HashMap;
+        let mut prev_map: HashMap<String, &Indicator> = HashMap::new();
+        for ind in &previous_indicators {
+            prev_map.insert(ind.name.clone(), ind);
+        }
+
+        let mut trends = Vec::new();
+        let mut new_indicators = Vec::new();
+
+        for latest in &latest_indicators {
+            if let Some(prev) = prev_map.get(&latest.name) {
+                if let (Ok(latest_num), Ok(prev_num)) = (
+                    latest.value.parse::<f64>(),
+                    prev.value.parse::<f64>(),
+                ) {
+                    let diff = latest_num - prev_num;
+                    let diff_percent = if prev_num != 0.0 {
+                        (diff / prev_num.abs()) * 100.0
+                    } else {
+                        0.0
+                    };
+
+                    let direction = if diff > 0.0 {
+                        "上升".to_string()
+                    } else if diff < 0.0 {
+                        "下降".to_string()
+                    } else {
+                        "不变".to_string()
+                    };
+
+                    trends.push(IndicatorTrend {
+                        name: latest.name.clone(),
+                        category: latest.category.clone(),
+                        unit: latest.unit.clone(),
+                        latest_value: latest.value.clone(),
+                        previous_value: prev.value.clone(),
+                        diff_value: diff,
+                        diff_percent: (diff_percent * 100.0).round() / 100.0,
+                        direction,
+                        latest_report_id: latest_report.id.clone(),
+                        previous_report_id: previous_report.id.clone(),
+                        latest_uploaded_at: latest_report.uploaded_at.clone(),
+                        previous_uploaded_at: previous_report.uploaded_at.clone(),
+                    });
+                }
+                prev_map.remove(&latest.name);
+            } else {
+                new_indicators.push(latest.clone());
+            }
+        }
+
+        let mut removed_indicators: Vec<Indicator> = Vec::new();
+        for (_, ind) in prev_map {
+            removed_indicators.push(ind.clone());
+        }
+
+        trends.sort_by(|a, b| a.category.cmp(&b.category).then(a.name.cmp(&b.name)));
+        new_indicators.sort_by(|a, b| a.category.cmp(&b.category).then(a.name.cmp(&b.name)));
+        removed_indicators.sort_by(|a, b| a.category.cmp(&b.category).then(a.name.cmp(&b.name)));
+
+        Ok(TrendComparison {
+            latest_report: latest_report.clone(),
+            previous_report: previous_report.clone(),
+            trends,
+            new_indicators,
+            removed_indicators,
+        })
     }
 }

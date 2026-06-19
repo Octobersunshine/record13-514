@@ -25,6 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/reports/{id}/indicators", get(handlers::get_indicators))
         .route("/api/indicators/abnormal", get(handlers::get_abnormal_indicators))
         .route("/api/indicators/search", get(handlers::get_indicators_by_category))
+        .route("/api/trend", get(handlers::get_trend_comparison))
         .layer(CorsLayer::permissive())
         .with_state(db);
 

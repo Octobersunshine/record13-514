@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::db::Db;
 use crate::error::AppError;
-use crate::models::{Indicator, Report, ReportWithIndicators};
+use crate::models::{Indicator, Report, ReportWithIndicators, TrendComparison};
 use crate::pdf_parser;
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +113,13 @@ pub async fn delete_report(
 ) -> Result<StatusCode, AppError> {
     db.delete_report(&id)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_trend_comparison(
+    State(db): State<Arc<Db>>,
+) -> Result<Json<TrendComparison>, AppError> {
+    let result = db.get_trend_comparison()?;
+    Ok(Json(result))
 }
 
 pub async fn health_check() -> &'static str {

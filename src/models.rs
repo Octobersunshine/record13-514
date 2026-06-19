@@ -35,3 +35,28 @@ pub struct ParsedIndicator {
     pub reference_range: String,
     pub is_abnormal: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndicatorTrend {
+    pub name: String,
+    pub category: String,
+    pub unit: String,
+    pub latest_value: String,
+    pub previous_value: String,
+    pub diff_value: f64,
+    pub diff_percent: f64,
+    pub direction: String,
+    pub latest_report_id: String,
+    pub previous_report_id: String,
+    pub latest_uploaded_at: String,
+    pub previous_uploaded_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrendComparison {
+    pub latest_report: Report,
+    pub previous_report: Report,
+    pub trends: Vec<IndicatorTrend>,
+    pub new_indicators: Vec<Indicator>,
+    pub removed_indicators: Vec<Indicator>,
+}
