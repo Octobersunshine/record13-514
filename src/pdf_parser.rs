@@ -158,22 +158,50 @@ pub fn parse_indicators(text: &str) -> Vec<ParsedIndicator> {
 }
 
 fn try_parse_indicator(text: &str, def: &IndicatorDef) -> Option<ParsedIndicator> {
+    let range_pat = r"(\d+\.?\d*)\s*[-–—~～]\s*(\d+\.?\d*)";
+    let marker = r"(?:[↑↑]|\bH\b|偏高|高)";
+    let marker_low = r"(?:[↓↓]|\bL\b|偏低|低)";
+    let unit_escaped = regex::escape(def.unit);
+
     for &name in def.names {
         let escaped = regex::escape(name);
-        let patterns = vec![
-            format!(r"{}\s*[：:]\s*(\d+\.?\d*)\s*({})?", escaped, regex::escape(def.unit)),
-            format!(r"{}\s+(\d+\.?\d*)\s*{}?", escaped, regex::escape(def.unit)),
-            format!(r"{}\s+(\d+\.?\d*)", escaped),
+
+        let patterns: Vec<String> = vec![
+            format!(r"{}\s*[：:]*\s*(\d+\.?\d*)\s*(?:{marker})?\s*{unit_escaped}\s*{range_pat}", escaped),
+            format!(r"{}\s+(\d+\.?\d*)\s*(?:{marker})?\s+{unit_escaped}\s+{range_pat}", escaped),
+            format!(r"{}\s*[：:]*\s*(\d+\.?\d*)\s*(?:{marker})?\s*{range_pat}\s*{unit_escaped}", escaped),
+            format!(r"{}\s+(\d+\.?\d*)\s*(?:{marker})?\s+{range_pat}\s+{unit_escaped}", escaped),
+            format!(r"{}\s*[：:]*\s*(\d+\.?\d*)\s*(?:{marker})?\s*{unit_escaped}", escaped),
+            format!(r"{}\s+(\d+\.?\d*)\s*(?:{marker})?\s+{unit_escaped}", escaped),
+            format!(r"{}\s*[：:]+\s*(\d+\.?\d*)\s*(?:{marker})?", escaped),
+            format!(r"{}\s+(\d+\.?\d*)\s*(?:{marker})?", escaped),
         ];
 
-        for pattern in patterns {
-            if let Ok(re) = Regex::new(&pattern) {
+        for pattern in &patterns {
+            if let Ok(re) = Regex::new(pattern) {
                 if let Some(caps) = re.captures(text) {
                     if let Some(value_match) = caps.get(1) {
                         let value_str = value_match.as_str();
                         if let Ok(num_value) = value_str.parse::<f64>() {
-                            let is_abnormal = num_value < def.ref_low || num_value > def.ref_high;
-                            let ref_range = format!("{}-{}", def.ref_low, def.ref_high);
+                            let ref_low = caps.get(2)
+                                .and_then(|m| m.as_str().parse::<f64>().ok());
+                            let ref_high = caps.get(3)
+                                .and_then(|m| m.as_str().parse::<f64>().ok());
+
+                            let ctx_start = value_match.start().saturating_sub(5);
+                            let ctx_end = (value_match.end() + 30).min(text.len());
+                            let context = &text[ctx_start..ctx_end];
+                            let has_high_marker = Regex::new(marker).unwrap().is_match(context);
+                            let has_low_marker = Regex::new(marker_low).unwrap().is_match(context);
+
+                            let final_low = ref_low.unwrap_or(def.ref_low);
+                            let final_high = ref_high.unwrap_or(def.ref_high);
+                            let is_abnormal = has_high_marker
+                                || has_low_marker
+                                || num_value < final_low
+                                || num_value > final_high;
+
+                            let ref_range = format!("{}-{}", final_low, final_high);
                             return Some(ParsedIndicator {
                                 category: def.category.to_string(),
                                 name: def.names[0].to_string(),
@@ -183,6 +211,71 @@ fn try_parse_indicator(text: &str, def: &IndicatorDef) -> Option<ParsedIndicator
                                 is_abnormal,
                             });
                         }
+                    }
+                }
+            }
+        }
+
+        if let Some(parsed) = try_parse_indicator_ref_range_first(text, name, def, &unit_escaped, &range_pat) {
+            return Some(parsed);
+        }
+    }
+
+    None
+}
+
+fn try_parse_indicator_ref_range_first(
+    text: &str,
+    name: &str,
+    def: &IndicatorDef,
+    unit_escaped: &str,
+    range_pat: &str,
+) -> Option<ParsedIndicator> {
+    let escaped = regex::escape(name);
+    let marker = r"(?:[↑↑]|\bH\b|偏高|高)";
+    let marker_low = r"(?:[↓↓]|\bL\b|偏低|低)";
+
+    let patterns: Vec<String> = vec![
+        // ref_range + value + marker + unit
+        format!(r"{}\s*[：:]*\s*{range_pat}\s+(\d+\.?\d*)\s*(?:{marker})?\s*{unit_escaped}", escaped),
+        format!(r"{}\s+{range_pat}\s+(\d+\.?\d*)\s*(?:{marker})?\s+{unit_escaped}", escaped),
+        // ref_range + value + marker (no unit)
+        format!(r"{}\s*[：:]*\s*{range_pat}\s+(\d+\.?\d*)\s*(?:{marker})?", escaped),
+        format!(r"{}\s+{range_pat}\s+(\d+\.?\d*)\s*(?:{marker})?", escaped),
+    ];
+
+    for pattern in patterns {
+        if let Ok(re) = Regex::new(&pattern) {
+            if let Some(caps) = re.captures(text) {
+                let ref_low = caps.get(1)
+                    .and_then(|m| m.as_str().parse::<f64>().ok());
+                let ref_high = caps.get(2)
+                    .and_then(|m| m.as_str().parse::<f64>().ok());
+                if let Some(value_match) = caps.get(3) {
+                    let value_str = value_match.as_str();
+                    if let Ok(num_value) = value_str.parse::<f64>() {
+                        let ctx_start = value_match.start().saturating_sub(5);
+                        let ctx_end = (value_match.end() + 30).min(text.len());
+                        let context = &text[ctx_start..ctx_end];
+                        let has_high_marker = Regex::new(marker).unwrap().is_match(context);
+                        let has_low_marker = Regex::new(marker_low).unwrap().is_match(context);
+
+                        let final_low = ref_low.unwrap_or(def.ref_low);
+                        let final_high = ref_high.unwrap_or(def.ref_high);
+                        let is_abnormal = has_high_marker
+                            || has_low_marker
+                            || num_value < final_low
+                            || num_value > final_high;
+
+                        let ref_range = format!("{}-{}", final_low, final_high);
+                        return Some(ParsedIndicator {
+                            category: def.category.to_string(),
+                            name: def.names[0].to_string(),
+                            value: value_str.to_string(),
+                            unit: def.unit.to_string(),
+                            reference_range: ref_range,
+                            is_abnormal,
+                        });
                     }
                 }
             }
@@ -222,5 +315,69 @@ mod tests {
         let fbg = indicators.iter().find(|i| i.name == "空腹血糖").unwrap();
         assert_eq!(fbg.value, "5.6");
         assert!(!fbg.is_abnormal);
+    }
+
+    #[test]
+    fn test_ref_range_before_value() {
+        let text = "谷丙转氨酶 0-40 58 U/L";
+        let indicators = parse_indicators(text);
+        let alt = indicators.iter().find(|i| i.name == "谷丙转氨酶").unwrap();
+        assert_eq!(alt.value, "58");
+        assert!(alt.is_abnormal);
+    }
+
+    #[test]
+    fn test_value_before_ref_range() {
+        let text = "尿酸 450 208-428 μmol/L";
+        let indicators = parse_indicators(text);
+        let ua = indicators.iter().find(|i| i.name == "尿酸").unwrap();
+        assert_eq!(ua.value, "450");
+        assert!(ua.is_abnormal);
+    }
+
+    #[test]
+    fn test_value_with_high_marker() {
+        let text = "谷丙转氨酶 58 ↑ U/L";
+        let indicators = parse_indicators(text);
+        let alt = indicators.iter().find(|i| i.name == "谷丙转氨酶").unwrap();
+        assert_eq!(alt.value, "58");
+        assert!(alt.is_abnormal);
+    }
+
+    #[test]
+    fn test_value_with_low_marker() {
+        let text = "白蛋白 38 ↓ g/L";
+        let indicators = parse_indicators(text);
+        let alb = indicators.iter().find(|i| i.name == "白蛋白").unwrap();
+        assert_eq!(alb.value, "38");
+        assert!(alb.is_abnormal);
+    }
+
+    #[test]
+    fn test_pdf_ref_range_overrides_hardcoded() {
+        let text = "空腹血糖 7.8 3.9-6.1 mmol/L";
+        let indicators = parse_indicators(text);
+        let fbg = indicators.iter().find(|i| i.name == "空腹血糖").unwrap();
+        assert_eq!(fbg.value, "7.8");
+        assert_eq!(fbg.reference_range, "3.9-6.1");
+        assert!(fbg.is_abnormal);
+    }
+
+    #[test]
+    fn test_normal_value_with_ref_range() {
+        let text = "白细胞 5.2 3.5-9.5 10^9/L";
+        let indicators = parse_indicators(text);
+        let wbc = indicators.iter().find(|i| i.name == "白细胞").unwrap();
+        assert_eq!(wbc.value, "5.2");
+        assert!(!wbc.is_abnormal);
+    }
+
+    #[test]
+    fn test_ref_range_first_with_marker() {
+        let text = "谷丙转氨酶 0-40 58 ↑ U/L";
+        let indicators = parse_indicators(text);
+        let alt = indicators.iter().find(|i| i.name == "谷丙转氨酶").unwrap();
+        assert_eq!(alt.value, "58");
+        assert!(alt.is_abnormal);
     }
 }
